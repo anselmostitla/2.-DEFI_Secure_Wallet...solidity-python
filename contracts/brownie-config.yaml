@@ -22,6 +22,8 @@ networks:
 
   goerli:
     eth_usd_price_feed: "0xD4a33860578De61DBAbDc8BFdb98FD742fA7028e"
+    link_usd_price_feed: "0x48731cF7e84dc94C5f84577882c14Be11a5B7456"
+    link_token: "0x326C977E6efc84E512bB9C30f76E30c160eD06FB"
   
   mainnet-fork-dev:
     eth_usd_price_feed: "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"

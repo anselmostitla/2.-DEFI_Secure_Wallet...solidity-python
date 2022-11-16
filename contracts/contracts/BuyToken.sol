@@ -12,18 +12,39 @@ contract BuyToken is Ownable{
     address createTokenAddress;
     AggregatorV3Interface internal priceFeed;
 
-    // The price of our token is defined by the variable _priceInUsd.
-    // Since _priceInUsd is an uint256, this variable can't have 0.001 
-    // as a value. That is, in this scenario our new token can´t have 
-    // a price less than a usd dollar, unless... we SCALE it.
+    /*
+    What happen if we want to inilialized the price of our newToken
+    with 0.001 usd?
 
-    // If we scale it by the factor 10^18, we would have 
-    // that 0.001 * 10^18 = 10^15 = 1000000000000000 (15 zeros).
+    Since the price of our newToken, is defined by the variable _priceInUsd,
+    and this an uint256, this variable can't accept 0.001 as a value, 
+    it only can accept integer values.
+
+    That is, in this scenario our newToken can´t have a
+    price less than a 1 usd dollar, unless... we SCALE it.
+
+    Similar to Ethereum to Wei's..., we can think in a new measure,
+    for example dollars to microDollars.
+
+    That is, we can think that 1 Dollar is equivalent to 10^18 microDollars
+    (1 dollar = 1,000,000,000,000,000,000 microDollars)
+
+    with this equivalence in mind, if we want to initialize our newToken with
+    a price of 0.001 usd.
+
+    It would be enought to scale 0.001  by the factor 10^18, 
     
-    // Thus if we set _priceInUsd = 1000000000000000 (15 zeros), it would mean that 
-    // we are setting a price of 0.001 usd for our new token.
+    if we do the scale or multiplication, we would have that:
 
-    // Why 18, because 18 is the number of decimals of our new token.
+    0.001 usd = 0.001 * 10^18 microUsd 
+              = 10^15 microUsd
+              = 1000000000000000 microUsd (15 zeros).
+    
+    Thus if we set _priceInUsd = 1000000000000000 (15 zeros), it would mean that 
+    we are setting a price of 0.001 usd for our newToken.
+
+    Why 18, because 18 is the number of decimals of our newToken.
+     */
     
     constructor(uint256 _priceInUsd, address _createTokenAddress, address _priceFeed) {
         createTokenAddress = _createTokenAddress;
@@ -57,17 +78,7 @@ contract BuyToken is Ownable{
     // the user is buying a quantity of 0.1 Tokens.
 
 
-    
-    function buyToken(address _to, uint256 numMicroTokens) public payable {
-        require(msg.value >= priceInWei()*numMicroTokens /(1*10**18), "Not enought money!");
-        require(newToken.balanceOf(owner()) >= numMicroTokens, "Asking more TOKENS than available");
-
-        newToken.transferFrom(msg.sender, _to, numMicroTokens);
-        // newToken.transfer(_to, numTokens);
-
-    }
-
-    function buyToken1(uint256 numMicroTokens) public payable {
+    function buyToken(uint256 numMicroTokens) public payable {
         require(msg.value >= priceInWei()*numMicroTokens /(1*10**18), "Not enought money!");
         require(newToken.balanceOf(owner()) >= numMicroTokens, "Asking more TOKENS than available");
 
@@ -88,7 +99,7 @@ contract BuyToken is Ownable{
     1 ETH --> 1*10^18 WEIs --> (latestPrice/10^8)  (1) latestPrice is already multiplied by 10^8
                  x    WEIs --> (priceInUsd/10^18)  (2) priceInUsd is already multiplied by 10^18
 
-    despejando x = priceInUsd * 10^8 / latestPrice
+    solving for x = priceInUsd * 10^8 / latestPrice
     */
     
     function priceInWei() public view returns(uint256){

@@ -4,14 +4,12 @@ pragma solidity >=0.6.0;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@chainlink/contracts/src/v0.6/interfaces/AggregatorV3Interface.sol";
-import "@chainlink/contracts/src/v0.6/interfaces/LinkTokenInterface.sol";
+import "../interfaces/LinkTokenInterface.sol";
 
 
 interface IStakeToken{
     function interestRate() external;
-    
     function getAmountStaked(address _user) external view returns(uint256);
-
 }
 
 contract LendingToken is Ownable{
@@ -20,16 +18,22 @@ contract LendingToken is Ownable{
     AggregatorV3Interface internal priceFeed;   
     AggregatorV3Interface internal priceFeedLinkToken;
 
-    uint256 maxPercentForLending;
+    uint256 public maxPercentForLending;
+    uint256 public interesRateForDebt;
+
     mapping(address => uint256) public lendingOf;
+    mapping(address => uint256) public timeOfLending;
     event eventLendingOf(address indexed _user, uint256 amountBorrowed);
 
 
-    constructor(address _stakeToken, address _linkToken, address _priceFeed, address _priceFeedLinkToken){
+    constructor(address _stakeToken, address _linkToken, address _priceFeed, address _priceFeedLinkToken, 
+                uint256 _interesRateForDebt, uint256 _maxPercentForLending){
         stakeToken = IStakeToken(_stakeToken);
         linkToken = LinkTokenInterface(_linkToken);
         priceFeed = AggregatorV3Interface(_priceFeed);
         priceFeedLinkToken = AggregatorV3Interface(_priceFeedLinkToken);
+        setInteresRateForDebt(_interesRateForDebt);
+        setMaxPercentForLending(_maxPercentForLending);
     }
 
     mapping(bytes32 => address) internal contractAddress;
@@ -39,30 +43,95 @@ contract LendingToken is Ownable{
     currencyForLending = Link
     */
 
-
-    function amountOfCurrencyForLending(address _user, uint256 _lendingPercent) public view {
-        uint256 microTokensStaked = stakeToken.getAmountStaked(_user);
-        require(microTokensStaked > 0, "You don't have newTokens staked");
-        uint256 microTokensInLink = convertMicroTokensToLink(microTokensStaked);
-        uint256 amountOfLinksForLending = microTokensInLink * _lendingPercent/100;
-        linkToken.transfer(_user, amountOfLinksForLending);
-        lendingOf[_user] = amountOfLinksForLending;
-        emit eventLendingOf(_user, amountOfLinksForLending);
+    function amountOfMicroTokensStaked() public view returns(uint256){
+        return stakeToken.getAmountStaked(msg.sender);
     }
 
-    // For example _maxPercentForLending = 70 (seventy percent)
+    function getAmountOfLending(uint256 _lendingPercent) public view returns(uint256){
+        require(_lendingPercent < maxPercentForLending, "Percent for lending set to high");
+        uint256 microTokensStaked = amountOfMicroTokensStaked();
+        uint256 microTokensInLink = convertMicroTokensToLink(microTokensStaked);
+        uint256 amountOfLinksForLending = microTokensInLink * _lendingPercent/10000;
+        return amountOfLinksForLending;
+    }
+
+    function lendingProcesser(uint256 _lendingPercent) public {
+        uint256 amountOfBorrowingToken = getAmountOfLending(_lendingPercent);
+        require(amountOfBorrowingToken > 0, "Borrowing amount must greater than zero");
+        linkToken.transferFrom(owner(), msg.sender, amountOfBorrowingToken);
+        lendingOf[msg.sender] = amountOfBorrowingToken;
+        timeOfLending[msg.sender] = block.timestamp;
+        emit eventLendingOf(msg.sender, amountOfBorrowingToken);
+    }
+
+    // For example _maxPercentForLending = 7000 (seventy percent)
     function setMaxPercentForLending(uint256 _maxPercentForLending) public onlyOwner{
         maxPercentForLending = _maxPercentForLending;
     }
 
-    function repay(uint256 _amount) public{
-        uint256 microTokensStaked = stakeToken.getAmountStaked(msg.sender);
-        require(microTokensStaked > 0, "You don't have newTokens staked");
-        require(lendingOf[msg.sender] > 0, "You don't have debt in this token");
-        require(_amount > 0, "The payment must be positive");
-        linkToken.transferFrom(msg.sender, address(this), _amount);
-        lendingOf[msg.sender] -= _amount;
-        emit eventLendingOf(msg.sender, amountOfLinksForLending);
+
+    function repay(uint256 _partialPayment) public{
+        // uint256 microTokensStaked = stakeToken.getAmountStaked(msg.sender);
+        // require(microTokensStaked > 0, "You don't have newTokens staked");
+        uint256 lendingAmount = lendingOf[msg.sender];
+        require( lendingAmount > 0, "You don't have debt in this token");
+
+        require(_partialPayment > 0, "The payment must be positive");
+
+        // linkToken.transferFrom(msg.sender, address(this), _partialPayment);
+        linkToken.transferFrom(msg.sender, owner(), _partialPayment);
+        lendingOf[msg.sender] = lendingAmount + totalDebtCalculationOfLendingCurrency() - _partialPayment;
+        timeOfLending[msg.sender] = block.timestamp;
+        // emit eventLendingOf(msg.sender, amountOfLinksForLending);
+        emit eventLendingOf(msg.sender, lendingOf[msg.sender] );
+    }
+
+    // function getTime() public view returns(uint256){
+    //     return block.timestamp;
+    // }
+
+    // uint256 public currentTime;
+    uint256 public totalDebtAmount;
+    function totalDebtCalculationOfLendingCurrency() public returns(uint256){
+        uint256 initialTime = timeOfLending[msg.sender];
+        uint256 currentTime = block.timestamp;
+        uint256 deltaTime = (currentTime - initialTime); // 10^5 for taking into account at least one second
+        // uint256 _days = deltaTime / (24*60*60);
+        uint256 amountOfLending = lendingOf[msg.sender];
+        /*
+        r: rate of interest
+        totalDebt = amountOfLending * (1 + r * _days/360)
+
+        if for example r = 0.0135, that is a 1.35%, we must scale r by the factor 10^4 to include at leat
+        two decimal points. Thus if R = r * 10^4, the formula would be:
+
+        totalDebt = amountOfLending * (1 + R * _days/[360*10^4])
+
+        since _days = deltaTime / (24*60*60), we have...
+
+        totalDebt = amountOfLending * (1 + R * [ deltaTime/(24*60*60) ]/[360*10^4])
+
+        // but in the case deltaTime = 1 second, deltaTime/(24*60*60) = 0.000012 which will be rounded to zero.
+        // To avoid this, we must scale deltaTime by the factor 10^5 to take into account at leat 5 decimals.
+        // Thus the formula will be:
+
+        // totalDebt = amountOfLending * (1*10^5 + R * [ deltaTime*10^5/(24*60*60) ]/[360*10^4])
+
+        // then the result will be given in the scale 10^5, thus in the frontend we must divide the 
+        // result by 10^5.
+
+        */
+
+      
+        // totalDebtAmount = amountOfLending*(1 + interesRateForDebt * deltaTime/((24*60*60)*(360 * 10**4)));
+        totalDebtAmount = amountOfLending * interesRateForDebt * deltaTime/((24*60*60)*(360 * 10**4));
+        return totalDebtAmount; 
+
+    }
+
+    // example _interesRateForDebt = 725 (means 7.25%)
+    function setInteresRateForDebt(uint256 _interesRateForDebt) public {
+        interesRateForDebt = _interesRateForDebt;
     }
 
     function getLatestPrice() public view returns(uint256){
@@ -70,8 +139,14 @@ contract LendingToken is Ownable{
         return uint256(latestPrice);
     }
 
-    function getTokenLatestPrice(AggregatorV3Interface contractOfSpecificToken) public view returns(uint256){
-        (,int latestPrice,,,) = contractOfSpecificToken.latestRoundData();
+
+    function getTokenLatestPrice(bool eth) public view returns(uint256){
+        int latestPrice;
+        if(eth){
+            (,latestPrice,,,) = priceFeed.latestRoundData();
+        } else{
+            (,latestPrice,,,) = priceFeedLinkToken.latestRoundData();
+        }
         return uint256(latestPrice);
     }
 
@@ -89,7 +164,7 @@ contract LendingToken is Ownable{
     
         priceInUsd = (m microTokens) * latestPrice / (10^8 * 130000)
 
-    As a way of testing, the price of one newToken will be 0.01 if we assume that latesPrice = 1300*10^8.
+    As a way of testing, the price of one newToken will be 0.01 if when latesPrice = 1300*10^8.
     */
     
     function priceInUsd(uint256 _microTokens) public view returns(uint256){
@@ -109,7 +184,8 @@ contract LendingToken is Ownable{
 
     */
     function priceInLink(uint256 _amountInUsd) public view returns(uint256){
-        return 10**8 * _amountInUsd / getTokenLatestPrice(priceFeedLinkToken);
+        // return 10**8 * _amountInUsd / getTokenLatestPrice(priceFeedLinkToken);
+        return 10**8 * _amountInUsd / getTokenLatestPrice(false);
     }
 
     function convertMicroTokensToLink(uint256 _microTokens) public view returns(uint256){

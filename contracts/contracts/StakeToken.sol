@@ -10,25 +10,13 @@ import "@chainlink/contracts/src/v0.6/interfaces/AggregatorV3Interface.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
-interface Token {
-    function transfer(address recipient, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function transferFrom(address sender, address recipient, uint256 amount) external returns (uint256);    
-    function approve(address spender, uint256 amount) external returns (bool);
-    function owner() external view returns (address);
-}
-
 contract StakeToken is Pausable, Ownable, ReentrancyGuard {
-    IERC20 myToken;
-    Token newToken;
+    IERC20 newToken;
     AggregatorV3Interface internal priceFeed;
-    
-    // 180 Days (180 * 24 * 60 * 60)
-    uint256 _planExpired = 15552000;
 
     uint16 public interestRate;
+    uint256 public minStakingDays;
 
-    uint256 public planExpired;
     uint8 public totalStakers;
 
     struct StakeInfo {        
@@ -36,10 +24,13 @@ contract StakeToken is Pausable, Ownable, ReentrancyGuard {
         uint256 endTS;        
         uint256 amount; 
         uint256 stakingDays;
-        uint256 claimed;   
+        uint256 trueStakingTime;
+        bool claimed;  
+        uint256 fee; 
         uint256 interest;   
         uint256 initialPrice; 
         uint256 finalPrice; 
+        uint256 finalAmount;
     }
     
     event Staked(address indexed from, uint256 amount);
@@ -49,40 +40,35 @@ contract StakeToken is Pausable, Ownable, ReentrancyGuard {
     mapping(address => bool) public addressStaked;
 
     
-    constructor(address _tokenAddress, uint16 _interestRate, address _priceFeed) {
+    constructor(address _tokenAddress, uint16 _interestRate, address _priceFeed, uint256 _minStakingDays) {
         require(address(_tokenAddress) != address(0),"Token Address cannot be address 0");   
-        newToken = Token(_tokenAddress);
-        myToken = IERC20(_tokenAddress);
+        newToken = IERC20(_tokenAddress);
         setInterestRate(_interestRate);
         priceFeed = AggregatorV3Interface(_priceFeed);                   
-        planExpired = block.timestamp + _planExpired;
         totalStakers = 0;
+        minStakingDays = _minStakingDays;
     }    
 
-    function transferToken(address to,uint256 amount) external onlyOwner{
-        require(newToken.transfer(to, amount), "Token transfer failed!");  
-    }
 
     function getAmountStaked(address _user) public view returns(uint256) {
         return stakeInfos[_user].amount;
     }
 
     function claimReward(address _to) external returns (bool){
+        uint256 currentTime = block.timestamp;
         require(addressStaked[_to] == true, "You are not participated");
-        require(stakeInfos[_to].endTS < block.timestamp, "Stake Time is not over yet");
-        require(stakeInfos[_to].claimed == 0, "Already claimed");
-        
+        require(stakeInfos[_to].endTS < currentTime, "Stake Time is not over yet");
+        require(stakeInfos[_to].claimed == false, "Already claimed");
+
+        stakeInfos[_to].trueStakingTime = currentTime - stakeInfos[_to].startTS;
         stakeInfos[_to].finalPrice = getLatestPrice();
         uint256 stakeAmount = stakeInfos[_to].amount;
         
         uint256 totalTokens = stakeAmount + tokensToPay(_to);
-        // uint256 totalTokens = stakeAmount;
-        // uint256 totalTokens = tokensToPay(_to);
         
-        stakeInfos[_to].claimed = totalTokens;
+        stakeInfos[_to].claimed = true;
+        stakeInfos[_to].finalAmount = totalTokens;
         newToken.transfer(_to, totalTokens);
-        // newToken.transferFrom(newToken.owner(),_to, totalTokens);
-        // newToken.transferFrom(_msgSender(), _to, totalTokens);
         stakeInfos[_to].amount = 0;
 
         emit Claimed(_to, totalTokens);
@@ -90,41 +76,72 @@ contract StakeToken is Pausable, Ownable, ReentrancyGuard {
         return true;
     }
 
+
     function getTokenExpiry() external view returns (uint256) {
         require(addressStaked[_msgSender()] == true, "You are not participated");
         return stakeInfos[_msgSender()].endTS;
     }
 
-    function testingTransfer(uint256 microTokensToStake) public {
-        newToken.transfer(address(this), microTokensToStake);
-    }
 
     // stakeAmount must be scale by a factor of 10^18, that is we are working with microTokensToStake
-    function stakeToken(uint256 microTokensToStake, uint256 _stakingDays) external payable whenNotPaused {
+    // function stakeToken(uint256 microTokensToStake, uint256 _stakingDays) external payable whenNotPaused {
+    function stakeToken(uint256 microTokensToStake) external payable whenNotPaused {
         require(microTokensToStake >0, "Stake amount should be correct");
-        require(block.timestamp < planExpired , "Plan Expired");
-        require(addressStaked[_msgSender()] == false, "You already participated");
-        require(newToken.balanceOf(_msgSender()) >= microTokensToStake, "Insufficient Balance");
+        // require(_stakingDays >= minStakingDays , "Staking days must be greaten than min expired");
+        // require(addressStaked[_msgSender()] == false, "You already participated");
         
         newToken.transferFrom(_msgSender(), address(this), microTokensToStake);
-        // newToken.transferFrom(_msgSender(), owner(), microTokensToStake);
-        // newToken.transfer(address(this), microTokensToStake);
         totalStakers++;
         addressStaked[_msgSender()] = true;
+        uint256 _fee = getFee(microTokensToStake);
 
         stakeInfos[_msgSender()] = StakeInfo({                
             startTS: block.timestamp,
-            endTS: block.timestamp + _stakingDays,
+            endTS: block.timestamp + minStakingDays,
             amount: microTokensToStake,
-            stakingDays: _stakingDays,
-            claimed: 0,
+            // stakingDays: _stakingDays,
+            stakingDays: 0,
+            trueStakingTime: 0,
+            claimed: false,
+            fee: _fee,
             interest: interestRate,
             initialPrice: getLatestPrice(),
-            finalPrice: getLatestPrice()
+            finalPrice: getLatestPrice(),
+            finalAmount: 0
         });
         
         emit Staked(_msgSender(), microTokensToStake);
     }    
+
+    function increaseStaking(uint256 newMicroTokensToStake) public {
+        require(newMicroTokensToStake >0, "Stake amount should be correct");
+        require(addressStaked[_msgSender()]);
+        // cut previos staking amount and rewards 
+        uint256 currentTime = block.timestamp;
+        stakeInfos[_msgSender()].trueStakingTime = currentTime - stakeInfos[_msgSender()].startTS;
+        stakeInfos[_msgSender()].finalPrice = getLatestPrice();
+        uint256 stakeAmount = stakeInfos[_msgSender()].amount;
+        uint256 totalTokens = stakeAmount + tokensToPay(_msgSender());
+        // add previos amount + rewards + newMicrotokensToStake
+        uint256 newAmount = totalTokens + newMicroTokensToStake;
+        uint256 _fee = getFee(newAmount);
+        newToken.transferFrom(_msgSender(), address(this), newMicroTokensToStake);
+
+        stakeInfos[_msgSender()] = StakeInfo({                
+            startTS: block.timestamp,
+            endTS: block.timestamp + minStakingDays,
+            amount: newAmount,
+            // stakingDays: _stakingDays,
+            stakingDays: 0,
+            trueStakingTime: 0,
+            claimed: false,
+            fee: _fee,
+            interest: interestRate,
+            initialPrice: getLatestPrice(),
+            finalPrice: getLatestPrice(),
+            finalAmount: 0
+        });
+    }
 
 
     function pause() external onlyOwner {
@@ -135,25 +152,77 @@ contract StakeToken is Pausable, Ownable, ReentrancyGuard {
         _unpause();
     }
 
+    function getInterestRate() external view returns(uint256) {
+            return interestRate;
+    } 
+
     function setInterestRate(uint16 _interestRate) public onlyOwner{
         interestRate = _interestRate;
     }
+
+    function getFee(uint256 amount) internal pure returns(uint256) {
+        if (amount < 100 * 10**18) return 1;
+        if (amount < 1000 * 10**18) return 10;
+        if (amount < 10000 * 10**18) return 20;
+        if (amount < 100000 * 10**18) return 30;
+        if (amount < 1000000 * 10**18) return 40;
+        else return 50;
+    }
+    
 
     function getLatestPrice() public view returns(uint256){
         (,int latestPrice,,,) = priceFeed.latestRoundData();
         return uint256(latestPrice);
     }
 
-    function calculationOfTheAmountOfInterest(address _user) public view returns(uint256){
+
+    function calculationOfTheAmountOfInterest(address _user) internal view returns(uint256){
         uint256 _stakeAmount = stakeInfos[_user].amount;
         uint256 _interestRate = stakeInfos[_user].interest;
-        uint256 _stakingDays = stakeInfos[_user].stakingDays;
-        // return _stakeAmount * _interestRate/10000 * stakingDays/365;
-        return _stakeAmount * _interestRate * _stakingDays / (10000*365);
+        uint256 _trueStakingTime = stakeInfos[_user].trueStakingTime;
+        return _stakeAmount * _interestRate * _trueStakingTime / (10000*365*24*60*60);
     }
 
-    // IF we trade BTCUSD, we will need to read prices from chainlink oracles
+    /*
+    Think a user buys certain AMOUNT of newTokens at a certain _initialPrice in usd.
+    Then after 90 days, suppose that such AMOUNT of newTokens is at certain _finalPrice in usd.
 
+    In the scenario where _finalPrice < _initialPrice we have a depretiation.
+
+    In this case, we need to cover the following quantity: _initialPrice - _finalPrice.
+
+    But we need to convert that quantity into our newToken. Thus we have the following
+    rule of three.
+
+    AMOUNT of newTokens     --->    _finalPrice
+        X  newTokens        --->    _initialPrice - _finalPrice
+
+    Solving for X we have the following formula:
+
+    X = (AMOUNT of newTokens) * (_initialPrice - _finalPrice) / _finalPrice
+
+    */
+
+
+    /*
+    Think a user buys 100 newTokens at 10 usd.
+    Then after 90 days, suppose that such 100 newTokens is at 9 usd.
+
+    In this case we have a depretiation.
+
+    In this case, we need to cover the following quantity: 10 usd - 9 usd = 1 usd.
+
+    But we need to convert that quantity into our newToken. Thus we have the following
+    rule of three.
+
+    100 newTokens     --->    9 usd
+    X  newTokens      --->    1 usd (this quantity is to cover depretiation)
+
+    Solving for X we have the following formula:
+
+    X = (100 newTokens) * (1 usd) / 9 usd
+
+    */
     function tokenCalculationToCoverDepreciation(address _user) public view returns(uint256){
         uint256 _stakeAmount = stakeInfos[_user].amount;
         uint256 _initialPrice = stakeInfos[_user].initialPrice;
@@ -161,7 +230,7 @@ contract StakeToken is Pausable, Ownable, ReentrancyGuard {
         return (_stakeAmount*(_initialPrice - _finalPrice))/ _finalPrice;
     }
 
-    function tokensToPay(address _user) public view returns(uint256){
+    function tokensToPay(address _user) internal view returns(uint256){
         uint256 _initialPrice = stakeInfos[_user].initialPrice;
         uint256 _finalPrice = stakeInfos[_user].finalPrice;
         uint256 tokensNeededForDepreciation = tokenCalculationToCoverDepreciation(_user);
@@ -176,8 +245,10 @@ contract StakeToken is Pausable, Ownable, ReentrancyGuard {
         } else {
             max = interestAmount;
         } 
+        max -= max * stakeInfos[_user].fee / 1000;
         return max;
     }
+    
 }
 
 // https://betterprogramming.pub/how-to-write-a-smart-contract-for-stake-the-token-a46fdb9221b6
