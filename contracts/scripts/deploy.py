@@ -1,5 +1,5 @@
 from brownie import config, network, CreateToken, BuyToken, StakeToken, LendingToken
-from brownie import MockV3Aggregator, MockV3AggregatorForLink, LinkToken, LendingToken1
+from brownie import MockV3Aggregator, MockV3AggregatorForLink, LinkToken
 
 from scripts.helpful_scripts import LOCAL_BLOCKCHAIN_ENVIRONMENTS, get_account
 from scripts.helpful_scripts import deploy_mocks, get_contract
@@ -90,8 +90,11 @@ def buy_token_interaction():
 
     FOUNDER = get_account(0)
     SPENDER = BuyToken[-1]  # or intermediary
-    # micro_tokens_to_buy = get_micro_tokens_to_buy(_wei_to_spend=100000)   # <--- <--- <--- <---
-    micro_tokens_to_buy = get_micro_tokens_to_buy(_wei_to_spend=10**10)   # <--- <--- <--- <---
+    if network.show_active() in LOCAL_BLOCKCHAIN_ENVIRONMENTS:
+        micro_tokens_to_buy = get_micro_tokens_to_buy(_wei_to_spend=10**10)   # <--- <--- <--- <---
+    else:        
+        micro_tokens_to_buy = get_micro_tokens_to_buy(_wei_to_spend=1) 
+    
     AMOUNT = micro_tokens_to_buy
     create_token.increaseAllowance(SPENDER, AMOUNT, {"from": FOUNDER})
 
@@ -221,7 +224,10 @@ def StakeToken_interaction_II():
     # First the user has to buy more newTokens to increase staking
     FOUNDER = get_account(0)
     SPENDER = BuyToken[-1]  # or intermediary
-    micro_tokens_to_buy = get_micro_tokens_to_buy(_wei_to_spend=10**10)   # <--- <--- <--- <---
+    if network.show_active() in LOCAL_BLOCKCHAIN_ENVIRONMENTS:
+        micro_tokens_to_buy = get_micro_tokens_to_buy(_wei_to_spend=10**10)   # <--- <--- <--- <---
+    else:
+        micro_tokens_to_buy = get_micro_tokens_to_buy(_wei_to_spend=1)   # <--- <--- <--- <---    
     AMOUNT = micro_tokens_to_buy
     create_token.increaseAllowance(SPENDER, AMOUNT, {"from": FOUNDER})
     # A call to the buyToken function of the smart contract is performed with
@@ -449,7 +455,6 @@ def main():
         deploy_BuyToken()
         deploy_StakeToken()
         deploy_LendingToken()
-        # deploy_LendingToken1()
 
     buy_token_interaction()
 
